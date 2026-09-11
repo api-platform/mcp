@@ -14,6 +14,7 @@ declare(strict_types=1);
 namespace ApiPlatform\Mcp\Server;
 
 use ApiPlatform\Mcp\State\ToolProvider;
+use ApiPlatform\Metadata\Exception\AccessDeniedException;
 use ApiPlatform\Metadata\Exception\HttpExceptionInterface;
 use ApiPlatform\Metadata\HttpOperation;
 use ApiPlatform\Metadata\Operation\Factory\OperationMetadataFactoryInterface;
@@ -31,6 +32,7 @@ use Mcp\Server\Session\SessionInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface as SymfonyHttpExceptionInterface;
 
 /**
  * @experimental
@@ -133,13 +135,16 @@ final class Handler implements RequestHandlerInterface
         }
 
         // The MCP transport has no HTTP response to carry a status code, so a caller-facing
-        // HttpExceptionInterface (e.g. access denied, validation) is converted into a JSON-RPC
-        // error carrying its message; anything else stays uncaught and reaches the SDK's own
-        // generic handler, which does not leak arbitrary exception messages to the client.
+        // HTTP exception (e.g. access denied, validation, not found) is converted into a JSON-RPC
+        // error carrying its message. Both API Platform's and Symfony's HttpExceptionInterface
+        // qualify: throwing Symfony's NotFoundHttpException from a state provider is a documented
+        // idiom, and API Platform has no 404 equivalent of its own. Anything else stays uncaught
+        // and reaches the SDK's own generic handler, which does not leak arbitrary exception
+        // messages to the client.
         try {
             $body = $this->provider->provide($operation, $uriVariables, $context);
-        } catch (HttpExceptionInterface $e) {
-            return Error::forInternalError($e->getMessage(), $request->getId());
+        } catch (HttpExceptionInterface|SymfonyHttpExceptionInterface $e) {
+            return Error::forInternalError($this->getPublicErrorMessage($e), $request->getId());
         }
 
         if (!$isResource && null !== ($httpRequest = $context['request'] ?? null)) {
@@ -159,8 +164,22 @@ final class Handler implements RequestHandlerInterface
 
         try {
             return $this->processor->process($body, $operation, $uriVariables, $context);
-        } catch (HttpExceptionInterface $e) {
-            return Error::forInternalError($e->getMessage(), $request->getId());
+        } catch (HttpExceptionInterface|SymfonyHttpExceptionInterface $e) {
+            return Error::forInternalError($this->getPublicErrorMessage($e), $request->getId());
         }
+    }
+
+    private function getPublicErrorMessage(\Throwable $exception): string
+    {
+        $current = $exception;
+        while (null !== $current) {
+            if ($current instanceof AccessDeniedException) {
+                return $current->getDetail() ?? 'Access Denied.';
+            }
+
+            $current = $current->getPrevious();
+        }
+
+        return $exception->getMessage();
     }
 }
