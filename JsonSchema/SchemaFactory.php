@@ -171,6 +171,31 @@ final class SchemaFactory implements SchemaFactoryInterface
             }
         }
 
+        return self::splitArrayType($node);
+    }
+
+    /**
+     * Several MCP clients read `type` as a single string and either reject the tool or drop
+     * the constraint when it is expressed as an array (e.g. nullable types yield ["string","null"]).
+     * Rewrite an array `type` into `anyOf` branches, each carrying a single `type`, for wider
+     * client compatibility. Other keywords stay as siblings of the `anyOf`.
+     *
+     * @see https://github.com/api-platform/core/issues/8504
+     */
+    private static function splitArrayType(array $node): array
+    {
+        if (!isset($node['type']) || !\is_array($node['type'])) {
+            return $node;
+        }
+
+        $branches = [];
+        foreach ($node['type'] as $type) {
+            $branches[] = ['type' => $type];
+        }
+
+        unset($node['type']);
+        $node['anyOf'] = $branches;
+
         return $node;
     }
 }
