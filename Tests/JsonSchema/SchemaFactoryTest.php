@@ -480,6 +480,43 @@ class SchemaFactoryTest extends TestCase
         $this->assertNull($captured);
     }
 
+    /**
+     * @see https://github.com/api-platform/core/issues/8504
+     *
+     * A nullable property is emitted upstream as `type: ["string", "null"]`. Several MCP clients
+     * read `type` as a single string, so the flattener must rewrite the array form into `anyOf`
+     * branches, each with a single `type`, while keeping sibling keywords in place.
+     */
+    public function testArrayTypeIsSplitIntoAnyOf(): void
+    {
+        $innerSchema = new Schema(Schema::VERSION_JSON_SCHEMA);
+        unset($innerSchema['$schema']);
+        $definitions = $innerSchema->getDefinitions();
+        $definitions['Root'] = new \ArrayObject([
+            'type' => 'object',
+            'properties' => [
+                'name' => new \ArrayObject([
+                    'type' => ['string', 'null'],
+                    'description' => 'A nullable name',
+                ]),
+            ],
+        ]);
+        $innerSchema['$ref'] = '#/definitions/Root';
+
+        $inner = $this->createMock(SchemaFactoryInterface::class);
+        $inner->method('buildSchema')->willReturn($innerSchema);
+
+        $factory = new SchemaFactory($inner);
+        $result = $factory->buildSchema('App\\Dummy', 'json');
+
+        $arr = $result->getArrayCopy();
+        $name = $arr['properties']['name'];
+
+        $this->assertArrayNotHasKey('type', $name, 'the array `type` must be removed');
+        $this->assertSame([['type' => 'string'], ['type' => 'null']], $name['anyOf']);
+        $this->assertSame('A nullable name', $name['description'], 'sibling keywords are preserved');
+    }
+
     private function emptyObjectSchema(): Schema
     {
         $schema = new Schema(Schema::VERSION_JSON_SCHEMA);
